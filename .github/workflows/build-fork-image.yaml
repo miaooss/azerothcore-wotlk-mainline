@@ -1,0 +1,119 @@
+name: Build and Push (fork image)
+
+# Builds the authserver/worldserver/db-import images from this branch,
+# with the same pinned module refs woobay/azerothcore-playerbots-docker
+# uses, and pushes them to ghcr.io/<owner>/*. This exists purely to get a
+# usable image for the Realm.EnforceId patch (see PR to
+# mod-playerbots/azerothcore-wotlk) while that PR is pending review -
+# woobay's repo only builds from upstream refs, so it can't produce an
+# image for an unmerged fork commit.
+#
+# Delete this workflow once the upstream PR merges and woobay's images
+# pick up the change.
+
+on:
+  push:
+    branches:
+      - docker-build-fork-v3
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # Pinned to the same module refs woobay/azerothcore-playerbots-docker
+  # uses, so this image only differs from theirs by the Realm.EnforceId
+  # core patch.
+  MODULE_REPO: mod-playerbots/mod-playerbots
+  MODULE_REF: 64f14c34f466bd8315dd012ca7be7f4eba309edd
+  MODULE2_REPO: Wishmaster117/mod-multibot-bridge
+  MODULE2_REF: 759c100d5e508b9af28531a2642ded70619828ba
+  MODULE3_REPO: NathanHandley/mod-ah-bot-plus
+  MODULE3_REF: 9fbcbe6439b0ee12a83ea126f1ae10d22f894582
+  MODULE4_REPO: azerothcore/mod-individual-xp
+  MODULE4_REF: 0de806cd46aa7ed9cf8e0bd7c8fecd81ff094944
+
+jobs:
+  build:
+    name: Build and Push (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      matrix:
+        target:
+          - authserver
+          - worldserver
+          - db-import
+      fail-fast: false
+    steps:
+      - name: Checkout core (this branch)
+        uses: actions/checkout@v4
+        with:
+          path: core
+          fetch-depth: 0
+
+      - name: Checkout playerbots module
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MODULE_REPO }}
+          ref: ${{ env.MODULE_REF }}
+          path: core/modules/mod-playerbots
+
+      - name: Checkout multibot-bridge module
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MODULE2_REPO }}
+          ref: ${{ env.MODULE2_REF }}
+          path: core/modules/mod-multibot-bridge
+
+      - name: Checkout ah-bot-plus module
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MODULE3_REPO }}
+          ref: ${{ env.MODULE3_REF }}
+          path: core/modules/mod-ah-bot-plus
+
+      - name: Checkout individual-xp module
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.MODULE4_REPO }}
+          ref: ${{ env.MODULE4_REF }}
+          path: core/modules/mod-individual-xp
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Map target to image name
+        id: image
+        run: |
+          set -euo pipefail
+          case "${{ matrix.target }}" in
+            authserver) name=ac-wotlk-playerbots-authserver ;;
+            worldserver) name=ac-wotlk-playerbots-worldserver ;;
+            db-import) name=ac-wotlk-playerbots-dbimport ;;
+          esac
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: core
+          file: core/apps/docker/Dockerfile
+          target: ${{ matrix.target }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/${{ steps.image.outputs.name }}:additional-realm-ids-fix
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}
